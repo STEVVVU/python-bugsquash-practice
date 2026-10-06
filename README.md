@@ -1,80 +1,87 @@
-<div align="center"><img src="https://raw.githubusercontent.com/pallets/click/refs/heads/stable/docs/_static/click-name.svg" alt="" height="150"></div>
+# Python Bugsquash Practice: Jinja
 
-# Click
+This private exercise uses Jinja 3.1.6 and is prepared for the existing `STEVVVU/python-bugsquash-practice` repository.
 
-## Bugsquash Practice
+## Setup
 
-This repository contains three independent Click behavior exercises. The starter
-has three independent seeded bugs that produce 16 failing pytest cases. Use the
-reports in [`problems/`](problems/) to reproduce each behavior and run its
-focused test. With all three behaviors repaired, the suite has 1,913 passing
-tests, plus the unchanged skips, expected failure, and stress-test deselections.
-
-Requires Python 3.11. From the repository root, create an environment and install
-the package and its pinned test dependency:
+Use Python 3.11. From the repository root, create a virtual environment:
 
 ```console
 python -m venv .venv
-# Windows PowerShell: .venv\Scripts\Activate.ps1
-# macOS / Linux: source .venv/bin/activate
-python -m pip install -e . -r requirements-dev.txt
 ```
 
-Run the full suite with `python -m pytest`. The 16 starter failures all arise
-from the three reported behavior boundaries; the remaining upstream suite
-continues to pass. Focused commands and expected results are listed in each
-problem report.
+Activate it in the shell you use:
 
-The exercise is based on Pallets Click 8.5.0. See [`UPSTREAM.md`](UPSTREAM.md)
-for source attribution and packaging notes.
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+```sh
+source .venv/bin/activate
+```
+
+Install the exercise and pinned test dependencies:
+
+```sh
+python -m pip install -r requirements-bugsquash.txt
+```
+
+Run the full suite with `python -m pytest -q`. The focused commands for each report are listed in the corresponding file under [`problems/`](problems/).
+
+The exercise starts with three intentional bugs. In that seeded state, the full suite reports 908 passed and 7 failed. After all three bugs are fixed, all 915 tests pass.
+
+## Reports
+
+- [Inherited template override loses access to the loop](problems/01-inherited-block.md)
+- [Nested autoescape state is not restored](problems/02-autoescape-scope.md)
+- [Context-aware callable misses a loop assignment](problems/03-loop-local-context.md)
 
 ---
 
-Click is a Python package for creating beautiful command line interfaces
-in a composable way with as little code as necessary. It's the "Command
-Line Interface Creation Kit". It's highly configurable but comes with
-sensible defaults out of the box.
+## Original Jinja project README
 
-It aims to make the process of writing command line tools quick and fun
-while also preventing any frustration caused by the inability to
-implement an intended CLI API.
+Jinja is a fast, expressive, extensible templating engine. Special
+placeholders in the template allow writing code similar to Python
+syntax. Then the template is passed data to render the final document.
 
-Click in three points:
+It includes:
 
--   Arbitrary nesting of commands
--   Automatic help page generation
--   Supports lazy loading of subcommands at runtime
+-   Template inheritance and inclusion.
+-   Define and import macros within templates.
+-   HTML templates can use autoescaping to prevent XSS from untrusted
+    user input.
+-   A sandboxed environment can safely render untrusted templates.
+-   AsyncIO support for generating templates and calling async
+    functions.
+-   I18N support with Babel.
+-   Templates are compiled to optimized Python code just-in-time and
+    cached, or can be compiled ahead-of-time.
+-   Exceptions point to the correct line in templates to make debugging
+    easier.
+-   Extensible filters, tests, functions, and even syntax.
+
+Jinja's philosophy is that while application logic belongs in Python if
+possible, it shouldn't make the template designer's job difficult by
+restricting functionality too much.
 
 
-## A Simple Example
+## In A Nutshell
 
-```python
-import click
-
-@click.command()
-@click.option("--count", default=1, help="Number of greetings.")
-@click.option("--name", prompt="Your name", help="The person to greet.")
-def hello(count, name):
-    """Simple program that greets NAME for a total of COUNT times."""
-    for _ in range(count):
-        click.echo(f"Hello, {name}!")
-
-if __name__ == '__main__':
-    hello()
+```jinja
+{% extends "base.html" %}
+{% block title %}Members{% endblock %}
+{% block content %}
+  <ul>
+  {% for user in users %}
+    <li><a href="{{ user.url }}">{{ user.username }}</a></li>
+  {% endfor %}
+  </ul>
+{% endblock %}
 ```
-
-```
-$ python hello.py --count=3
-Your name: Click
-Hello, Click!
-Hello, Click!
-Hello, Click!
-```
-
 
 ## Donate
 
-The Pallets organization develops and supports Click and other popular
+The Pallets organization develops and supports Jinja and other popular
 packages. In order to grow the community of contributors and users, and
 allow the maintainers to devote more time to the projects, [please
 donate today][].
@@ -88,3 +95,4 @@ contribute, including reporting issues, requesting features, asking or answering
 questions, and making PRs.
 
 [contrib]: https://palletsprojects.com/contributing/
+
