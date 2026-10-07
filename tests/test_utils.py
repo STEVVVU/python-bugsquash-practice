@@ -1,205 +1,303 @@
-import copy
-import pickle
-import random
-from collections import deque
-from copy import copy as shallow_copy
+from __future__ import annotations
+
+import inspect
+from datetime import datetime
 
 import pytest
-from markupsafe import Markup
 
-from jinja2.utils import consume
-from jinja2.utils import generate_lorem_ipsum
-from jinja2.utils import LRUCache
-from jinja2.utils import missing
-from jinja2.utils import object_type_repr
-from jinja2.utils import select_autoescape
-from jinja2.utils import urlize
-
-
-class TestLRUCache:
-    def test_simple(self):
-        d = LRUCache(3)
-        d["a"] = 1
-        d["b"] = 2
-        d["c"] = 3
-        d["a"]
-        d["d"] = 4
-        assert d.keys() == ["d", "a", "c"]
-
-    def test_values(self):
-        cache = LRUCache(3)
-        cache["b"] = 1
-        cache["a"] = 2
-        assert cache.values() == [2, 1]
-
-    def test_values_empty(self):
-        cache = LRUCache(2)
-        assert cache.values() == []
-
-    def test_pickleable(self):
-        cache = LRUCache(2)
-        cache["foo"] = 42
-        cache["bar"] = 23
-        cache["foo"]
-
-        for protocol in range(3):
-            copy = pickle.loads(pickle.dumps(cache, protocol))
-            assert copy.capacity == cache.capacity
-            assert copy._mapping == cache._mapping
-            assert copy._queue == cache._queue
-
-    @pytest.mark.parametrize("copy_func", [LRUCache.copy, shallow_copy])
-    def test_copy(self, copy_func):
-        cache = LRUCache(2)
-        cache["a"] = 1
-        cache["b"] = 2
-        copy = copy_func(cache)
-        assert copy._queue == cache._queue
-        copy["c"] = 3
-        assert copy._queue != cache._queue
-        assert copy.keys() == ["c", "b"]
-
-    def test_clear(self):
-        d = LRUCache(3)
-        d["a"] = 1
-        d["b"] = 2
-        d["c"] = 3
-        d.clear()
-        assert d.__getstate__() == {"capacity": 3, "_mapping": {}, "_queue": deque([])}
-
-    def test_repr(self):
-        d = LRUCache(3)
-        d["a"] = 1
-        d["b"] = 2
-        d["c"] = 3
-        # Sort the strings - mapping is unordered
-        assert sorted(repr(d)) == sorted("<LRUCache {'a': 1, 'b': 2, 'c': 3}>")
-
-    def test_items(self):
-        """Test various items, keys, values and iterators of LRUCache."""
-        d = LRUCache(3)
-        d["a"] = 1
-        d["b"] = 2
-        d["c"] = 3
-        assert d.items() == [("c", 3), ("b", 2), ("a", 1)]
-        assert d.keys() == ["c", "b", "a"]
-        assert d.values() == [3, 2, 1]
-        assert list(reversed(d)) == ["a", "b", "c"]
-
-        # Change the cache a little
-        d["b"]
-        d["a"] = 4
-        assert d.items() == [("a", 4), ("b", 2), ("c", 3)]
-        assert d.keys() == ["a", "b", "c"]
-        assert d.values() == [4, 2, 3]
-        assert list(reversed(d)) == ["c", "b", "a"]
-
-    def test_setdefault(self):
-        d = LRUCache(3)
-        assert len(d) == 0
-        assert d.setdefault("a") is None
-        assert d.setdefault("a", 1) is None
-        assert len(d) == 1
-        assert d.setdefault("b", 2) == 2
-        assert len(d) == 2
+from werkzeug import Request
+from werkzeug import utils
+from werkzeug.datastructures import Headers
+from werkzeug.http import http_date
+from werkzeug.http import parse_date
+from werkzeug.test import Client
+from werkzeug.test import EnvironBuilder
+from werkzeug.wrappers import Response
 
 
-class TestHelpers:
-    def test_object_type_repr(self):
-        class X:
-            pass
+@pytest.mark.parametrize(
+    ("url", "code", "expect"),
+    [
+        ("http://example.com", None, "http://example.com"),
+        ("/füübär", 305, "/f%C3%BC%C3%BCb%C3%A4r"),
+        ("http://☃.example.com/", 307, "http://xn--n3h.example.com/"),
+        ("itms-services://?url=abc", None, "itms-services://?url=abc"),
+    ],
+)
+def test_redirect(url: str, code: int | None, expect: str) -> None:
+    environ = EnvironBuilder().get_environ()
 
-        assert object_type_repr(42) == "int object"
-        assert object_type_repr([]) == "list object"
-        assert object_type_repr(X()) == "test_utils.X object"
-        assert object_type_repr(None) == "None"
-        assert object_type_repr(Ellipsis) == "Ellipsis"
+    if code is None:
+        resp = utils.redirect(url)
+        assert resp.status_code == 302
+    else:
+        resp = utils.redirect(url, code)
+        assert resp.status_code == code
 
-    def test_autoescape_select(self):
-        func = select_autoescape(
-            enabled_extensions=("html", ".htm"),
-            disabled_extensions=("txt",),
-            default_for_string="STRING",
-            default="NONE",
+    assert resp.headers["Location"] == url
+    assert resp.get_wsgi_headers(environ)["Location"] == expect
+    assert resp.get_data(as_text=True).count(url) == 2
+
+
+def test_redirect_xss():
+    location = 'http://example.com/?xss="><script>alert(1)</script>'
+    resp = utils.redirect(location)
+    assert b"<script>alert(1)</script>" not in resp.get_data()
+
+    location = 'http://example.com/?xss="onmouseover="alert(1)'
+    resp = utils.redirect(location)
+    assert (
+        b'href="http://example.com/?xss="onmouseover="alert(1)"' not in resp.get_data()
+    )
+
+
+def test_redirect_with_custom_response_class():
+    class MyResponse(Response):
+        pass
+
+    location = "http://example.com/redirect"
+    resp = utils.redirect(location, Response=MyResponse)
+
+    assert isinstance(resp, MyResponse)
+    assert resp.headers["Location"] == location
+
+
+def test_cached_property():
+    foo = []
+
+    class A:
+        def prop(self):
+            foo.append(42)
+            return 42
+
+        prop = utils.cached_property(prop)
+
+    a = A()
+    p = a.prop
+    q = a.prop
+    assert p == q == 42
+    assert foo == [42]
+
+    foo = []
+
+    class A:
+        def _prop(self):
+            foo.append(42)
+            return 42
+
+        prop = utils.cached_property(_prop, name="prop")
+        del _prop
+
+    a = A()
+    p = a.prop
+    q = a.prop
+    assert p == q == 42
+    assert foo == [42]
+
+
+def test_can_set_cached_property():
+    class A:
+        @utils.cached_property
+        def _prop(self):
+            return "cached_property return value"
+
+    a = A()
+    a._prop = "value"
+    assert a._prop == "value"
+
+
+def test_invalidate_cached_property():
+    accessed = 0
+
+    class A:
+        @utils.cached_property
+        def prop(self):
+            nonlocal accessed
+            accessed += 1
+            return 42
+
+    a = A()
+    p = a.prop
+    q = a.prop
+    assert p == q == 42
+    assert accessed == 1
+
+    a.prop = 16
+    assert a.prop == 16
+    assert accessed == 1
+
+    del a.prop
+    r = a.prop
+    assert r == 42
+    assert accessed == 2
+
+
+def test_inspect_treats_cached_property_as_property():
+    class A:
+        @utils.cached_property
+        def _prop(self):
+            return "cached_property return value"
+
+    attrs = inspect.classify_class_attrs(A)
+    for attr in attrs:
+        if attr.name == "_prop":
+            break
+    assert attr.kind == "property"
+
+
+def test_environ_property():
+    class A:
+        environ = {"string": "abc", "number": "42"}
+
+        string = utils.environ_property("string")
+        missing = utils.environ_property("missing", "spam")
+        read_only = utils.environ_property("number")
+        number = utils.environ_property("number", load_func=int)
+        broken_number = utils.environ_property("broken_number", load_func=int)
+        date = utils.environ_property(
+            "date", None, parse_date, http_date, read_only=False
         )
+        foo = utils.environ_property("foo")
 
-        assert func(None) == "STRING"
-        assert func("unknown.foo") == "NONE"
-        assert func("foo.html")
-        assert func("foo.htm")
-        assert not func("foo.txt")
-        assert func("FOO.HTML")
-        assert not func("FOO.TXT")
+    a = A()
+    assert a.string == "abc"
+    assert a.missing == "spam"
 
+    def test_assign():
+        a.read_only = "something"
 
-class TestEscapeUrlizeTarget:
-    def test_escape_urlize_target(self):
-        url = "http://example.org"
-        target = "<script>"
-        assert urlize(url, target=target) == (
-            '<a href="http://example.org"'
-            ' target="&lt;script&gt;">'
-            "http://example.org</a>"
-        )
-
-    def test_urlize_mail_mastodon(self):
-        fr = "nabijaczleweli@nabijaczleweli.xyz\n@eater@cijber.social\n"
-        to = (
-            '<a href="mailto:nabijaczleweli@nabijaczleweli.xyz">'
-            "nabijaczleweli@nabijaczleweli.xyz</a>\n@eater@cijber.social\n"
-        )
-        assert urlize(fr) == to
+    pytest.raises(AttributeError, test_assign)
+    assert a.number == 42
+    assert a.broken_number is None
+    assert a.date is None
+    a.date = datetime(2008, 1, 22, 10, 0, 0, 0)
+    assert a.environ["date"] == "Tue, 22 Jan 2008 10:00:00 GMT"
 
 
-class TestLoremIpsum:
-    def test_lorem_ipsum_markup(self):
-        """Test that output of lorem_ipsum is Markup by default."""
-        assert isinstance(generate_lorem_ipsum(), Markup)
+def test_import_string():
+    from datetime import date
 
-    def test_lorem_ipsum_html(self):
-        """Test that output of lorem_ipsum is a string_type when not html."""
-        assert isinstance(generate_lorem_ipsum(html=False), str)
+    from werkzeug.debug import DebuggedApplication
 
-    def test_lorem_ipsum_n(self):
-        """Test that the n (number of lines) works as expected."""
-        assert generate_lorem_ipsum(n=0, html=False) == ""
-        for n in range(1, 50):
-            assert generate_lorem_ipsum(n=n, html=False).count("\n") == (n - 1) * 2
-
-    def test_lorem_ipsum_min(self):
-        """Test that at least min words are in the output of each line"""
-        for _ in range(5):
-            m = random.randrange(20, 99)
-            for _ in range(10):
-                assert generate_lorem_ipsum(n=1, min=m, html=False).count(" ") >= m - 1
-
-    def test_lorem_ipsum_max(self):
-        """Test that at least max words are in the output of each line"""
-        for _ in range(5):
-            m = random.randrange(21, 100)
-            for _ in range(10):
-                assert generate_lorem_ipsum(n=1, max=m, html=False).count(" ") < m - 1
+    assert utils.import_string("datetime.date") is date
+    assert utils.import_string("datetime.date") is date
+    assert utils.import_string("datetime:date") is date
+    assert utils.import_string("XXXXXXXXXXXX", True) is None
+    assert utils.import_string("datetime.XXXXXXXXXXXX", True) is None
+    assert (
+        utils.import_string("werkzeug.debug.DebuggedApplication") is DebuggedApplication
+    )
+    pytest.raises(ImportError, utils.import_string, "XXXXXXXXXXXXXXXX")
+    pytest.raises(ImportError, utils.import_string, "datetime.XXXXXXXXXX")
 
 
-def test_missing():
-    """Test the repr of missing."""
-    assert repr(missing) == "missing"
+def test_import_string_provides_traceback(tmpdir, monkeypatch):
+    monkeypatch.syspath_prepend(str(tmpdir))
+    # Couple of packages
+    dir_a = tmpdir.mkdir("a")
+    dir_b = tmpdir.mkdir("b")
+    # Totally packages, I promise
+    dir_a.join("__init__.py").write("")
+    dir_b.join("__init__.py").write("")
+    # 'aa.a' that depends on 'bb.b', which in turn has a broken import
+    dir_a.join("aa.py").write("from b import bb")
+    dir_b.join("bb.py").write("from os import a_typo")
+
+    # Do we get all the useful information in the traceback?
+    with pytest.raises(ImportError) as baz_exc:
+        utils.import_string("a.aa")
+    traceback = "".join(str(line) for line in baz_exc.traceback)
+    assert "bb.py':1" in traceback  # a bit different than typical python tb
+    assert "from os import a_typo" in traceback
 
 
-def test_consume():
-    """Test that consume consumes an iterator."""
-    x = iter([1, 2, 3, 4, 5])
-    consume(x)
-    with pytest.raises(StopIteration):
-        next(x)
+def test_import_string_attribute_error(tmpdir, monkeypatch):
+    monkeypatch.syspath_prepend(str(tmpdir))
+    tmpdir.join("foo_test.py").write("from bar_test import value")
+    tmpdir.join("bar_test.py").write("raise AttributeError('bad')")
+
+    with pytest.raises(AttributeError) as info:
+        utils.import_string("foo_test")
+
+    assert "bad" in str(info.value)
+
+    with pytest.raises(AttributeError) as info:
+        utils.import_string("bar_test")
+
+    assert "bad" in str(info.value)
 
 
-@pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
-def test_pickle_missing(protocol: int) -> None:
-    """Test that missing can be pickled while remaining a singleton."""
-    assert pickle.loads(pickle.dumps(missing, protocol)) is missing
+def test_find_modules():
+    assert list(utils.find_modules("werkzeug.debug")) == [
+        "werkzeug.debug.console",
+        "werkzeug.debug.repr",
+        "werkzeug.debug.tbtools",
+    ]
 
 
-def test_copy_missing() -> None:
-    """Test that missing can be copied while remaining a singleton."""
-    assert copy.copy(missing) is missing
+def test_header_set_duplication_bug():
+    headers = Headers([("Content-Type", "text/html"), ("Foo", "bar"), ("Blub", "blah")])
+    headers["blub"] = "hehe"
+    headers["blafasel"] = "humm"
+    assert headers == Headers(
+        [
+            ("Content-Type", "text/html"),
+            ("Foo", "bar"),
+            ("blub", "hehe"),
+            ("blafasel", "humm"),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "base_url", "absolute_location"),
+    [
+        ("foo", "http://example.org/app", "http://example.org/app/foo/"),
+        ("/foo", "http://example.org/app", "http://example.org/app/foo/"),
+        ("/foo/bar", "http://example.org/", "http://example.org/foo/bar/"),
+        ("/foo/bar", "http://example.org/app", "http://example.org/app/foo/bar/"),
+        ("/foo?baz", "http://example.org/", "http://example.org/foo/?baz"),
+        ("/foo/", "http://example.org/", "http://example.org/foo/"),
+        ("/foo/", "http://example.org/app", "http://example.org/app/foo/"),
+        ("/", "http://example.org/", "http://example.org/"),
+        ("/", "http://example.org/app", "http://example.org/app/"),
+    ],
+)
+@pytest.mark.parametrize("autocorrect", [False, True])
+def test_append_slash_redirect(autocorrect, path, base_url, absolute_location):
+    @Request.application
+    def app(request):
+        rv = utils.append_slash_redirect(request.environ)
+        rv.autocorrect_location_header = autocorrect
+        return rv
+
+    client = Client(app)
+    response = client.get(path, base_url=base_url)
+    assert response.status_code == 308
+
+    if not autocorrect:
+        assert response.headers["Location"].count("/") == 1
+    else:
+        assert response.headers["Location"] == absolute_location
+
+
+def test_cached_property_doc():
+    @utils.cached_property
+    def foo():
+        """testing"""
+        return 42
+
+    assert foo.__doc__ == "testing"
+    assert foo.__name__ == "foo"
+    assert foo.__module__ == __name__
+
+
+def test_secure_filename():
+    assert utils.secure_filename("My cool movie.mov") == "My_cool_movie.mov"
+    assert utils.secure_filename("../../../etc/passwd") == "etc_passwd"
+    assert (
+        utils.secure_filename("i contain cool \xfcml\xe4uts.txt")
+        == "i_contain_cool_umlauts.txt"
+    )
+    assert utils.secure_filename("__filename__") == "filename"
+    assert utils.secure_filename("foo$&^*)bar") == "foobar"

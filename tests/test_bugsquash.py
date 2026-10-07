@@ -1,89 +1,116 @@
-from jinja2 import DictLoader
-from jinja2 import Environment
-from jinja2 import pass_context
-from jinja2 import pass_eval_context
+from io import BytesIO
+
+import pytest
+
+from werkzeug.exceptions import NotFound
+from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.routing import Map
+from werkzeug.routing import RequestRedirect
+from werkzeug.routing import Rule
+from werkzeug.test import create_environ
+from werkzeug.wrappers import Request
+from werkzeug.wrappers import Response
 
 
-def test_inherited_override_can_read_scoped_loop_values():
-    env = Environment(
-        loader=DictLoader(
+def _multipart_request(data):
+    return Request.from_values(
+        method="POST", data=data, content_type="multipart/form-data"
+    )
+
+
+def test_problem01_exact_part_limit_accepts_one_part():
+    request = _multipart_request({"field": "value"})
+    request.max_form_parts = 1
+
+    assert request.form["field"] == "value"
+    assert not request.files
+
+
+def test_problem01_exact_part_limit_accepts_one_file():
+    request = _multipart_request(
+        {"upload": (BytesIO(b"payload"), "file.txt")}
+    )
+    request.max_form_parts = 1
+
+    assert request.files["upload"].read() == b"payload"
+    request.close()
+
+
+@pytest.mark.parametrize(
+    ("data", "max_parts"),
+    [
+        (
+            {"field": "value", "upload": (BytesIO(b"payload"), "file.txt")},
+            1,
+        ),
+        (
             {
-                "base.html": (
-                    "{% for item in items %}{% block card scoped %}"
-                    "base{% endblock %}{% endfor %}"
-                ),
-                "child.html": (
-                    "{% extends 'base.html' %}{% block card %}"
-                    "{{ loop.index }}={{ item }};{% endblock %}"
-                ),
-            }
-        )
+                "first": "one",
+                "second": "two",
+                "upload": (BytesIO(b"payload"), "file.txt"),
+            },
+            2,
+        ),
+    ],
+)
+def test_problem01_part_limit_counts_file_parts(data, max_parts):
+    request = _multipart_request(data)
+    request.max_form_parts = max_parts
+
+    with request:
+        with pytest.raises(RequestEntityTooLarge):
+            request.form
+
+
+def test_problem02_merge_enabled_route_redirects_to_normalized_path():
+    url_map = Map([Rule("/yes/merging", endpoint="merged")])
+    adapter = url_map.bind("example.org", "/")
+
+    with pytest.raises(RequestRedirect) as error:
+        adapter.match("/yes//merging")
+
+    assert error.value.new_url.endswith("/yes/merging")
+
+
+def test_problem02_merge_disabled_route_does_not_redirect():
+    url_map = Map(
+        [Rule("/no/merging", endpoint="no_merging", merge_slashes=False)]
     )
+    adapter = url_map.bind("example.org", "/")
 
-    assert env.get_template("child.html").render(items=["a", "b"]) == "1=a;2=b;"
-
-
-def test_ordinary_loop_can_read_loop_index():
-    env = Environment()
-    template = env.from_string(
-        "{% for item in items %}{{ loop.index }}={{ item }};{% endfor %}"
-    )
-
-    assert template.render(items=["a", "b"]) == "1=a;2=b;"
+    assert adapter.match("/no/merging")[0] == "no_merging"
+    with pytest.raises(NotFound):
+        adapter.match("/no//merging")
 
 
-def test_scoped_block_inside_loop_can_read_loop_index():
-    env = Environment()
-    template = env.from_string(
-        "{% for item in items %}{% block card scoped %}"
-        "{{ loop.index }}={{ item }};{% endblock %}{% endfor %}"
-    )
+@pytest.mark.parametrize(
+    ("headers", "status", "content_range", "body"),
+    [
+        (
+            {"Range": "bytes=0-3", "If-Range": '"current"'},
+            206,
+            "bytes 0-3/8",
+            b"abcd",
+        ),
+        (
+            {"Range": "bytes=0-3", "If-Range": '"stale"'},
+            200,
+            None,
+            b"abcdefgh",
+        ),
+        ({"Range": "bytes=0-3"}, 206, "bytes 0-3/8", b"abcd"),
+        ({"If-Range": '"current"'}, 200, None, b"abcdefgh"),
+    ],
+)
+def test_problem03_range_depends_on_if_range_validator(
+    headers, status, content_range, body
+):
+    environ = create_environ(headers=headers)
+    response = Response("abcdefgh")
+    response.set_etag("current")
 
-    assert template.render(items=["a", "b"]) == "1=a;2=b;"
+    response.make_conditional(environ, accept_ranges=True, complete_length=8)
 
-
-def test_nested_autoescape_state_returns_to_each_enclosing_scope():
-    @pass_eval_context
-    def autoescape_state(eval_ctx, value):
-        return str(eval_ctx.autoescape)
-
-    env = Environment(autoescape=False)
-    env.filters["autoescape_state"] = autoescape_state
-    template = env.from_string(
-        "{% autoescape true %}{{ value|autoescape_state }}|"
-        "{% autoescape false %}{{ value|autoescape_state }}"
-        "{% endautoescape %}|{{ value|autoescape_state }}"
-        "{% endautoescape %}|{{ value|autoescape_state }}"
-    )
-
-    assert template.render(value="x") == "True|False|True|False"
-
-
-def test_context_callable_sees_loop_assignment_without_leaking_it():
-    @pass_context
-    def current_value(context):
-        return context.get("value", "missing")
-
-    env = Environment(autoescape=False)
-    env.globals["current_value"] = current_value
-    template = env.from_string(
-        "{% set value='outer' %}{{ current_value() }}|"
-        "{% for item in ['x'] %}{% set value='inner' %}"
-        "{{ current_value() }}{% endfor %}|{{ current_value() }}"
-    )
-
-    assert template.render() == "outer|inner|outer"
-
-
-def test_context_callable_without_loop_sees_outer_value():
-    @pass_context
-    def current_value(context):
-        return context.get("value", "missing")
-
-    env = Environment(autoescape=False)
-    env.globals["current_value"] = current_value
-    template = env.from_string(
-        "{% set value='outer' %}{{ current_value() }}"
-    )
-
-    assert template.render() == "outer"
+    assert response.status_code == status
+    assert response.headers.get("Content-Range") == content_range
+    assert response.get_data() == body

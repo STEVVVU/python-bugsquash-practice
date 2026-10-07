@@ -1,202 +1,86 @@
+import os
+import sys
+
 import pytest
-from markupsafe import escape
 
-from jinja2 import Environment
-from jinja2.exceptions import SecurityError
-from jinja2.exceptions import TemplateRuntimeError
-from jinja2.exceptions import TemplateSyntaxError
-from jinja2.nodes import EvalContext
-from jinja2.sandbox import ImmutableSandboxedEnvironment
-from jinja2.sandbox import SandboxedEnvironment
-from jinja2.sandbox import unsafe
+from werkzeug.security import check_password_hash
+from werkzeug.security import generate_password_hash
+from werkzeug.security import safe_join
 
 
-class PrivateStuff:
-    def bar(self):
-        return 23
-
-    @unsafe
-    def foo(self):
-        return 42
-
-    def __repr__(self):
-        return "PrivateStuff"
+def test_default_password_method():
+    value = generate_password_hash("secret")
+    assert value.startswith("scrypt:")
 
 
-class PublicStuff:
-    def bar(self):
-        return 23
-
-    def _foo(self):
-        return 42
-
-    def __repr__(self):
-        return "PublicStuff"
+@pytest.mark.xfail(
+    sys.implementation.name == "pypy", reason="scrypt unavailable on pypy"
+)
+def test_scrypt():
+    value = generate_password_hash("secret", method="scrypt")
+    assert check_password_hash(value, "secret")
+    assert value.startswith("scrypt:32768:8:1$")
 
 
-class TestSandbox:
-    def test_unsafe(self, env):
-        env = SandboxedEnvironment()
-        pytest.raises(
-            SecurityError, env.from_string("{{ foo.foo() }}").render, foo=PrivateStuff()
-        )
-        assert env.from_string("{{ foo.bar() }}").render(foo=PrivateStuff()) == "23"
-
-        pytest.raises(
-            SecurityError, env.from_string("{{ foo._foo() }}").render, foo=PublicStuff()
-        )
-        assert env.from_string("{{ foo.bar() }}").render(foo=PublicStuff()) == "23"
-        assert env.from_string("{{ foo.__class__ }}").render(foo=42) == ""
-        assert env.from_string("{{ foo.func_code }}").render(foo=lambda: None) == ""
-        # security error comes from __class__ already.
-        pytest.raises(
-            SecurityError,
-            env.from_string("{{ foo.__class__.__subclasses__() }}").render,
-            foo=42,
-        )
-
-    def test_immutable_environment(self, env):
-        env = ImmutableSandboxedEnvironment()
-        pytest.raises(SecurityError, env.from_string("{{ [].append(23) }}").render)
-        pytest.raises(SecurityError, env.from_string("{{ [].clear() }}").render)
-        pytest.raises(SecurityError, env.from_string("{{ [1].pop() }}").render)
-        pytest.raises(SecurityError, env.from_string("{{ {1:2}.clear() }}").render)
-
-    def test_restricted(self, env):
-        env = SandboxedEnvironment()
-        pytest.raises(
-            TemplateSyntaxError,
-            env.from_string,
-            "{% for item.attribute in seq %}...{% endfor %}",
-        )
-        pytest.raises(
-            TemplateSyntaxError,
-            env.from_string,
-            "{% for foo, bar.baz in seq %}...{% endfor %}",
-        )
-
-    def test_template_data(self, env):
-        env = Environment(autoescape=True)
-        t = env.from_string(
-            "{% macro say_hello(name) %}"
-            "<p>Hello {{ name }}!</p>{% endmacro %}"
-            '{{ say_hello("<blink>foo</blink>") }}'
-        )
-        escaped_out = "<p>Hello &lt;blink&gt;foo&lt;/blink&gt;!</p>"
-        assert t.render() == escaped_out
-        assert str(t.module) == escaped_out
-        assert escape(t.module) == escaped_out
-        assert t.module.say_hello("<blink>foo</blink>") == escaped_out
-        assert (
-            escape(t.module.say_hello(EvalContext(env), "<blink>foo</blink>"))
-            == escaped_out
-        )
-        assert escape(t.module.say_hello("<blink>foo</blink>")) == escaped_out
-
-    def test_attr_filter(self, env):
-        env = SandboxedEnvironment()
-        tmpl = env.from_string('{{ cls|attr("__subclasses__")() }}')
-        pytest.raises(SecurityError, tmpl.render, cls=int)
-
-    def test_binary_operator_intercepting(self, env):
-        def disable_op(left, right):
-            raise TemplateRuntimeError("that operator so does not work")
-
-        for expr, ctx, rv in ("1 + 2", {}, "3"), ("a + 2", {"a": 2}, "4"):
-            env = SandboxedEnvironment()
-            env.binop_table["+"] = disable_op
-            t = env.from_string(f"{{{{ {expr} }}}}")
-            assert t.render(ctx) == rv
-            env.intercepted_binops = frozenset(["+"])
-            t = env.from_string(f"{{{{ {expr} }}}}")
-            with pytest.raises(TemplateRuntimeError):
-                t.render(ctx)
-
-    def test_unary_operator_intercepting(self, env):
-        def disable_op(arg):
-            raise TemplateRuntimeError("that operator so does not work")
-
-        for expr, ctx, rv in ("-1", {}, "-1"), ("-a", {"a": 2}, "-2"):
-            env = SandboxedEnvironment()
-            env.unop_table["-"] = disable_op
-            t = env.from_string(f"{{{{ {expr} }}}}")
-            assert t.render(ctx) == rv
-            env.intercepted_unops = frozenset(["-"])
-            t = env.from_string(f"{{{{ {expr} }}}}")
-            with pytest.raises(TemplateRuntimeError):
-                t.render(ctx)
+def test_pbkdf2():
+    value = generate_password_hash("secret", method="pbkdf2")
+    assert check_password_hash(value, "secret")
+    assert value.startswith("pbkdf2:sha256:1000000$")
 
 
-class TestStringFormat:
-    def test_basic_format_safety(self):
-        env = SandboxedEnvironment()
-        t = env.from_string('{{ "a{0.__class__}b".format(42) }}')
-        assert t.render() == "ab"
-
-    def test_basic_format_all_okay(self):
-        env = SandboxedEnvironment()
-        t = env.from_string('{{ "a{0.foo}b".format({"foo": 42}) }}')
-        assert t.render() == "a42b"
-
-    def test_safe_format_safety(self):
-        env = SandboxedEnvironment()
-        t = env.from_string('{{ ("a{0.__class__}b{1}"|safe).format(42, "<foo>") }}')
-        assert t.render() == "ab&lt;foo&gt;"
-
-    def test_safe_format_all_okay(self):
-        env = SandboxedEnvironment()
-        t = env.from_string('{{ ("a{0.foo}b{1}"|safe).format({"foo": 42}, "<foo>") }}')
-        assert t.render() == "a42b&lt;foo&gt;"
-
-    def test_empty_braces_format(self):
-        env = SandboxedEnvironment()
-        t1 = env.from_string('{{ ("a{}b{}").format("foo", "42")}}')
-        t2 = env.from_string('{{ ("a{}b{}"|safe).format(42, "<foo>") }}')
-        assert t1.render() == "afoob42"
-        assert t2.render() == "a42b&lt;foo&gt;"
+def test_salted_hashes():
+    hash1 = generate_password_hash("secret")
+    hash2 = generate_password_hash("secret")
+    assert hash1 != hash2
+    assert check_password_hash(hash1, "secret")
+    assert check_password_hash(hash2, "secret")
 
 
-class TestStringFormatMap:
-    def test_basic_format_safety(self):
-        env = SandboxedEnvironment()
-        t = env.from_string('{{ "a{x.__class__}b".format_map({"x":42}) }}')
-        assert t.render() == "ab"
+def test_require_salt():
+    with pytest.raises(ValueError):
+        generate_password_hash("secret", salt_length=0)
 
-    def test_basic_format_all_okay(self):
-        env = SandboxedEnvironment()
-        t = env.from_string('{{ "a{x.foo}b".format_map({"x":{"foo": 42}}) }}')
-        assert t.render() == "a42b"
 
-    def test_safe_format_all_okay(self):
-        env = SandboxedEnvironment()
-        t = env.from_string(
-            '{{ ("a{x.foo}b{y}"|safe).format_map({"x":{"foo": 42}, "y":"<foo>"}) }}'
-        )
-        assert t.render() == "a42b&lt;foo&gt;"
+def test_invalid_method():
+    with pytest.raises(ValueError, match="Invalid hash method"):
+        generate_password_hash("secret", "sha256")
 
-    def test_indirect_call(self):
-        def run(value, arg):
-            return value.run(arg)
 
-        env = SandboxedEnvironment()
-        env.filters["run"] = run
-        t = env.from_string(
-            """{% set
-                ns = namespace(run="{0.__call__.__builtins__[__import__]}".format)
-            %}
-            {{ ns | run(not_here) }}
-            """
-        )
+@pytest.mark.parametrize(
+    ("path", "expect"),
+    [
+        ("b/c", "a/b/c"),
+        ("../b/c", None),
+        ("b\\c", None if os.name == "nt" else "a/b\\c"),
+        ("//b/c", None),
+    ],
+)
+def test_safe_join(path, expect):
+    assert safe_join("a", path) == expect
 
-        with pytest.raises(SecurityError):
-            t.render()
 
-    def test_attr_filter(self) -> None:
-        env = SandboxedEnvironment()
-        t = env.from_string(
-            """{{ "{0.__call__.__builtins__[__import__]}"
-                  | attr("format")(not_here) }}"""
-        )
+def test_safe_join_os_sep():
+    import werkzeug.security as sec
 
-        with pytest.raises(SecurityError):
-            t.render()
+    prev_value = sec._os_alt_seps
+    sec._os_alt_seps = "*"
+    assert safe_join("foo", "bar/baz*") is None
+    sec._os_alt_steps = prev_value
+
+
+def test_safe_join_empty_trusted():
+    assert safe_join("", "c:test.txt") == "./c:test.txt"
+
+
+@pytest.mark.parametrize(
+    "name", ["CON", "CON.txt", "CON.txt.html", "CON  ", "CON . txt", "b/CON"]
+)
+def test_safe_join_windows_special(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Windows special device name is not allowed on Windows."""
+    monkeypatch.setattr("os.name", "nt")
+    assert safe_join("a", name) is None
+
+
+def test_safe_join_not_windows_special(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("os.name", "posix")
+    assert safe_join("a", "CON") == "a/CON"

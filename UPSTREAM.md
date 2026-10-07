@@ -1,13 +1,15 @@
-# Upstream provenance
+# Upstream source
 
-- Project: Pallets Jinja, release 3.1.6.
-- Source: `https://github.com/pallets/jinja`, commit `15206881c006c79667fe5154fe80c01c65410679`.
-- License: BSD 3-Clause. The upstream `LICENSE.txt` and copyright notices are retained.
-- The source was exported from the pinned Git commit. Upstream source, tests, docs, examples, artwork, changelog, and project metadata are retained. `.github/` workflows and `.devcontainer/` were omitted from this exercise repository.
-- The root README adds exercise setup and report links, then retains the upstream README content. `problems/` contains task-facing reports; `tests/test_bugsquash.py` contains deterministic behavior checks.
+This exercise is based on the official Pallets Werkzeug repository:
 
-## Setup
+- Repository: <https://github.com/pallets/werkzeug>
+- Release: 3.1.9
+- Commit: `6604c3b8784ecc7cf5ac0b7412d916989b4c7d45`
+- License: BSD-3-Clause; see `LICENSE.txt` for the upstream copyright and terms.
 
-Use the Python 3.11 setup and shell activation steps in the root README, then install the editable project with the pinned upstream test dependencies and run the suite as documented there.
-
-`requirements-bugsquash.txt` installs this checkout in editable mode and includes the upstream `requirements/tests.txt` pins. The Jinja runtime dependency `MarkupSafe>=2.0` is resolved through the project metadata.
+The upstream `src/`, `tests/`, `docs/`, and `examples/` trees are preserved, as
+are `README.md`, `CHANGES.rst`, `pyproject.toml`, and `uv.lock`. This training
+copy omits repository-only Git metadata, GitHub workflows, the development
+container configuration, and deployment or release automation. The only
+intentional upstream source differences are the three behavior seeds described
+in the exercise reports; original tests and assertions are retained.

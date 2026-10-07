@@ -1,29 +1,83 @@
 .. rst-class:: hide-header
 
-Jinja
-=====
+Werkzeug
+========
 
-.. image:: _static/jinja-logo.png
+.. image:: _static/werkzeug-name.svg
     :align: center
-    :target: https://palletsprojects.com/p/jinja/
+    :height: 200px
 
-Jinja is a fast, expressive, extensible templating engine. Special
-placeholders in the template allow writing code similar to Python
-syntax. Then the template is passed data to render the final document.
+*werkzeug* German noun: "tool".
+Etymology: *werk* ("work"), *zeug* ("stuff")
+
+Werkzeug is a comprehensive `WSGI`_ web application library. It began as
+a simple collection of various utilities for WSGI applications and has
+become one of the most advanced WSGI utility libraries.
+
+Werkzeug doesn't enforce any dependencies. It is up to the developer to
+choose a template engine, database adapter, and even how to handle
+requests.
+
+.. _WSGI: https://wsgi.readthedocs.io/en/latest/
+
+
+Getting Started
+---------------
+
+.. toctree::
+   :maxdepth: 2
+
+   installation
+   tutorial
+   levels
+   quickstart
+
+
+Serving and Testing
+-------------------
+
+.. toctree::
+   :maxdepth: 2
+
+   serving
+   test
+   debug
+
+
+Reference
+---------
+
+.. toctree::
+   :maxdepth: 2
+
+   wrappers
+   routing
+   wsgi
+   http
+   datastructures
+   utils
+   urls
+   local
+   middleware/index
+   exceptions
+
+
+Deployment
+----------
+
+.. toctree::
+   :maxdepth: 3
+
+   deployment/index
+
+
+Additional Information
+----------------------
 
 .. toctree::
     :maxdepth: 2
-    :caption: Contents:
 
-    intro
-    api
-    sandbox
-    nativetypes
-    templates
-    extensions
-    integration
-    switching
-    tricks
-    faq
+    terms
+    request_data
     license
     changes

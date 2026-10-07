@@ -1,117 +1,323 @@
-import pickle
+import linecache
 import re
-from traceback import format_exception
+import sys
+from unittest import mock
 
 import pytest
 
-from jinja2 import ChoiceLoader
-from jinja2 import DictLoader
-from jinja2 import Environment
-from jinja2 import TemplateSyntaxError
+from werkzeug.debug import console
+from werkzeug.debug import DebuggedApplication
+from werkzeug.debug import DebugTraceback
+from werkzeug.debug import get_machine_id
+from werkzeug.debug.console import HTMLStringO
+from werkzeug.debug.repr import debug_repr
+from werkzeug.debug.repr import DebugReprGenerator
+from werkzeug.debug.repr import dump
+from werkzeug.debug.repr import helper
+from werkzeug.test import Client
+from werkzeug.wrappers import Request
 
 
-@pytest.fixture
-def fs_env(filesystem_loader):
-    """returns a new environment."""
-    return Environment(loader=filesystem_loader)
+class TestDebugRepr:
+    def test_basic_repr(self):
+        assert debug_repr([]) == "[]"
+        assert debug_repr([1, 2]) == (
+            '[<span class="number">1</span>, <span class="number">2</span>]'
+        )
+        assert debug_repr([1, "test"]) == (
+            '[<span class="number">1</span>,'
+            ' <span class="string">&#39;test&#39;</span>]'
+        )
+        assert debug_repr([None]) == '[<span class="object">None</span>]'
 
+    def test_string_repr(self):
+        assert debug_repr("") == '<span class="string">&#39;&#39;</span>'
+        assert debug_repr("foo") == '<span class="string">&#39;foo&#39;</span>'
+        assert debug_repr("s" * 80) == (
+            f'<span class="string">&#39;{"s" * 69}'
+            f'<span class="extended">{"s" * 11}&#39;</span></span>'
+        )
+        assert debug_repr("<" * 80) == (
+            f'<span class="string">&#39;{"&lt;" * 69}'
+            f'<span class="extended">{"&lt;" * 11}&#39;</span></span>'
+        )
 
-class TestDebug:
-    def assert_traceback_matches(self, callback, expected_tb):
-        with pytest.raises(Exception) as exc_info:
-            callback()
+    def test_string_subclass_repr(self):
+        class Test(str):
+            pass
 
-        tb = format_exception(exc_info.type, exc_info.value, exc_info.tb)
-        m = re.search(expected_tb.strip(), "".join(tb))
+        assert debug_repr(Test("foo")) == (
+            '<span class="module">test_debug.</span>'
+            'Test(<span class="string">&#39;foo&#39;</span>)'
+        )
+
+    def test_sequence_repr(self):
+        assert debug_repr(list(range(20))) == (
+            '[<span class="number">0</span>, <span class="number">1</span>, '
+            '<span class="number">2</span>, <span class="number">3</span>, '
+            '<span class="number">4</span>, <span class="number">5</span>, '
+            '<span class="number">6</span>, <span class="number">7</span>, '
+            '<span class="extended"><span class="number">8</span>, '
+            '<span class="number">9</span>, <span class="number">10</span>, '
+            '<span class="number">11</span>, <span class="number">12</span>, '
+            '<span class="number">13</span>, <span class="number">14</span>, '
+            '<span class="number">15</span>, <span class="number">16</span>, '
+            '<span class="number">17</span>, <span class="number">18</span>, '
+            '<span class="number">19</span></span>]'
+        )
+
+    def test_mapping_repr(self):
+        assert debug_repr({}) == "{}"
+        assert debug_repr({"foo": 42}) == (
+            '{<span class="pair"><span class="key"><span class="string">&#39;foo&#39;'
+            '</span></span>: <span class="value"><span class="number">42'
+            "</span></span></span>}"
+        )
+        assert debug_repr(dict(zip(range(10), [None] * 10))) == (
+            '{<span class="pair"><span class="key"><span class="number">0'
+            '</span></span>: <span class="value"><span class="object">None'
+            "</span></span></span>, "
+            '<span class="pair"><span class="key"><span class="number">1'
+            '</span></span>: <span class="value"><span class="object">None'
+            "</span></span></span>, "
+            '<span class="pair"><span class="key"><span class="number">2'
+            '</span></span>: <span class="value"><span class="object">None'
+            "</span></span></span>, "
+            '<span class="pair"><span class="key"><span class="number">3'
+            '</span></span>: <span class="value"><span class="object">None'
+            "</span></span></span>, "
+            '<span class="extended">'
+            '<span class="pair"><span class="key"><span class="number">4'
+            '</span></span>: <span class="value"><span class="object">None'
+            "</span></span></span>, "
+            '<span class="pair"><span class="key"><span class="number">5'
+            '</span></span>: <span class="value"><span class="object">None'
+            "</span></span></span>, "
+            '<span class="pair"><span class="key"><span class="number">6'
+            '</span></span>: <span class="value"><span class="object">None'
+            "</span></span></span>, "
+            '<span class="pair"><span class="key"><span class="number">7'
+            '</span></span>: <span class="value"><span class="object">None'
+            "</span></span></span>, "
+            '<span class="pair"><span class="key"><span class="number">8'
+            '</span></span>: <span class="value"><span class="object">None'
+            "</span></span></span>, "
+            '<span class="pair"><span class="key"><span class="number">9'
+            '</span></span>: <span class="value"><span class="object">None'
+            "</span></span></span></span>}"
+        )
+        assert debug_repr((1, "zwei", "drei")) == (
+            '(<span class="number">1</span>, <span class="string">&#39;'
+            'zwei&#39;</span>, <span class="string">&#39;drei&#39;</span>)'
+        )
+
+    def test_custom_repr(self):
+        class Foo:
+            def __repr__(self):
+                return "<Foo 42>"
+
+        assert debug_repr(Foo()) == '<span class="object">&lt;Foo 42&gt;</span>'
+
+    def test_list_subclass_repr(self):
+        class MyList(list):
+            pass
+
+        assert debug_repr(MyList([1, 2])) == (
+            '<span class="module">test_debug.</span>MyList(['
+            '<span class="number">1</span>, <span class="number">2</span>])'
+        )
+
+    def test_regex_repr(self):
         assert (
-            m is not None
-        ), f"Traceback did not match:\n\n{''.join(tb)}\nexpected:\n{expected_tb}"
-
-    def test_runtime_error(self, fs_env):
-        def test():
-            tmpl.render(fail=lambda: 1 / 0)
-
-        tmpl = fs_env.get_template("broken.html")
-        self.assert_traceback_matches(
-            test,
-            r"""
-  File ".*?broken.html", line 2, in (top-level template code|<module>)
-    \{\{ fail\(\) \}\}(
-    \^{12})?
-  File ".*debug?.pyc?", line \d+, in <lambda>
-    tmpl\.render\(fail=lambda: 1 / 0\)(
-                             ~~\^~~)?
-ZeroDivisionError: (int(eger)? )?division (or modulo )?by zero
-""",
+            debug_repr(re.compile(r"foo\d"))
+            == "re.compile(<span class=\"string regex\">r'foo\\d'</span>)"
+        )
+        # No ur'' in Py3
+        # https://bugs.python.org/issue15096
+        assert debug_repr(re.compile("foo\\d")) == (
+            "re.compile(<span class=\"string regex\">r'foo\\d'</span>)"
         )
 
-    def test_syntax_error(self, fs_env):
-        # The trailing .*? is for PyPy 2 and 3, which don't seem to
-        # clear the exception's original traceback, leaving the syntax
-        # error in the middle of other compiler frames.
-        self.assert_traceback_matches(
-            lambda: fs_env.get_template("syntaxerror.html"),
-            """(?sm)
-  File ".*?syntaxerror.html", line 4, in (template|<module>)
-    \\{% endif %\\}.*?
-(jinja2\\.exceptions\\.)?TemplateSyntaxError: Encountered unknown tag 'endif'. Jinja \
-was looking for the following tags: 'endfor' or 'else'. The innermost block that needs \
-to be closed is 'for'.
-    """,
+    def test_set_repr(self):
+        assert (
+            debug_repr(frozenset("x"))
+            == 'frozenset([<span class="string">&#39;x&#39;</span>])'
+        )
+        assert debug_repr(set("x")) == (
+            'set([<span class="string">&#39;x&#39;</span>])'
         )
 
-    def test_regular_syntax_error(self, fs_env):
-        def test():
-            raise TemplateSyntaxError("wtf", 42)
+    def test_recursive_repr(self):
+        a = [1]
+        a.append(a)
+        assert debug_repr(a) == '[<span class="number">1</span>, [...]]'
 
-        self.assert_traceback_matches(
-            test,
-            r"""
-  File ".*debug.pyc?", line \d+, in test
-    raise TemplateSyntaxError\("wtf", 42\)(
-    \^{36})?
-(jinja2\.exceptions\.)?TemplateSyntaxError: wtf
-  line 42""",
+    def test_broken_repr(self):
+        class Foo:
+            def __repr__(self):
+                raise Exception("broken!")
+
+        assert debug_repr(Foo()) == (
+            '<span class="brokenrepr">&lt;broken repr (Exception: broken!)&gt;</span>'
         )
 
-    def test_pickleable_syntax_error(self, fs_env):
-        original = TemplateSyntaxError("bad template", 42, "test", "test.txt")
-        unpickled = pickle.loads(pickle.dumps(original))
-        assert str(original) == str(unpickled)
-        assert original.name == unpickled.name
 
-    def test_include_syntax_error_source(self, filesystem_loader):
-        e = Environment(
-            loader=ChoiceLoader(
-                [
-                    filesystem_loader,
-                    DictLoader({"inc": "a\n{% include 'syntaxerror.html' %}\nb"}),
-                ]
-            )
-        )
-        t = e.get_template("inc")
+class Foo:
+    x = 42
+    y = 23
 
-        with pytest.raises(TemplateSyntaxError) as exc_info:
-            t.render()
+    def __init__(self):
+        self.z = 15
 
-        assert exc_info.value.source is not None
 
-    def test_local_extraction(self):
-        from jinja2.debug import get_template_locals
-        from jinja2.runtime import missing
+class TestDebugHelpers:
+    def test_object_dumping(self):
+        drg = DebugReprGenerator()
+        out = drg.dump_object(Foo())
+        assert re.search("Details for test_debug.Foo object at", out)
+        assert re.search('<th>x.*<span class="number">42</span>', out, flags=re.DOTALL)
+        assert re.search('<th>y.*<span class="number">23</span>', out, flags=re.DOTALL)
+        assert re.search('<th>z.*<span class="number">15</span>', out, flags=re.DOTALL)
 
-        locals = get_template_locals(
-            {
-                "l_0_foo": 42,
-                "l_1_foo": 23,
-                "l_2_foo": 13,
-                "l_0_bar": 99,
-                "l_1_bar": missing,
-                "l_0_baz": missing,
-            }
-        )
-        assert locals == {"foo": 13, "bar": 99}
+        out = drg.dump_object({"x": 42, "y": 23})
+        assert re.search("Contents of", out)
+        assert re.search('<th>x.*<span class="number">42</span>', out, flags=re.DOTALL)
+        assert re.search('<th>y.*<span class="number">23</span>', out, flags=re.DOTALL)
 
-    def test_get_corresponding_lineno_traceback(self, fs_env):
-        tmpl = fs_env.get_template("test.html")
-        assert tmpl.get_corresponding_lineno(1) == 1
+        out = drg.dump_object({"x": 42, "y": 23, 23: 11})
+        assert not re.search("Contents of", out)
+
+        out = drg.dump_locals({"x": 42, "y": 23})
+        assert re.search("Local variables in frame", out)
+        assert re.search('<th>x.*<span class="number">42</span>', out, flags=re.DOTALL)
+        assert re.search('<th>y.*<span class="number">23</span>', out, flags=re.DOTALL)
+
+    def test_debug_dump(self):
+        old = sys.stdout
+        sys.stdout = HTMLStringO()
+        try:
+            dump([1, 2, 3])
+            x = sys.stdout.reset()
+            dump()
+            y = sys.stdout.reset()
+        finally:
+            sys.stdout = old
+
+        assert "Details for list object at" in x
+        assert '<span class="number">1</span>' in x
+        assert "Local variables in frame" in y
+        assert "<th>x" in y
+        assert "<th>old" in y
+
+    def test_debug_help(self):
+        old = sys.stdout
+        sys.stdout = HTMLStringO()
+        try:
+            helper([1, 2, 3])
+            x = sys.stdout.reset()
+        finally:
+            sys.stdout = old
+
+        assert "Help on list object" in x
+        assert "__delitem__" in x
+
+    def test_exc_divider_found_on_chained_exception(self):
+        @Request.application
+        def app(request):
+            def do_something():
+                raise ValueError("inner")
+
+            try:
+                do_something()
+            except ValueError:
+                raise KeyError("outer")  # noqa: B904
+
+        debugged = DebuggedApplication(app)
+        client = Client(debugged)
+        response = client.get("/")
+        data = response.get_data(as_text=True)
+        assert 'raise ValueError("inner")' in data
+        assert '<div class="exc-divider">' in data
+        assert 'raise KeyError("outer")' in data
+
+
+def test_get_machine_id():
+    rv = get_machine_id()
+    assert isinstance(rv, bytes)
+
+
+@pytest.mark.parametrize("crash", (True, False))
+@pytest.mark.dev_server
+def test_basic(dev_server, crash):
+    c = dev_server(use_debugger=True)
+    r = c.request("/crash" if crash else "")
+    assert r.status == (500 if crash else 200)
+
+    if crash:
+        assert b"The debugger caught an exception in your WSGI application" in r.data
+    else:
+        assert r.json["PATH_INFO"] == "/"
+
+
+def test_console_closure_variables(monkeypatch):
+    # restore the original display hook
+    monkeypatch.setattr(sys, "displayhook", console._displayhook)
+    c = console.Console()
+    c.eval("y = 5")
+    c.eval("x = lambda: y")
+    ret = c.eval("x()")
+    assert ret == ">>> x()\n5\n"
+
+
+@pytest.mark.timeout(2)
+def test_chained_exception_cycle():
+    try:
+        try:
+            raise ValueError()
+        except ValueError:
+            raise TypeError()  # noqa: B904
+    except TypeError as e:
+        # create a cycle and make it available outside the except block
+        e.__context__.__context__ = error = e
+
+    # if cycles aren't broken, this will time out
+    tb = DebugTraceback(error)
+    assert len(tb.all_tracebacks) == 2
+
+
+def test_exception_without_traceback():
+    try:
+        raise Exception("msg1")
+    except Exception as e:
+        # filter_hidden_frames should skip this since it has no traceback
+        e.__context__ = Exception("msg2")
+        DebugTraceback(e)
+
+
+@mock.patch.object(linecache, "getlines", autospec=True)
+def test_missing_source_lines(mock_getlines: mock.Mock) -> None:
+    """Rendering doesn't fail when the line number is beyond the available
+    source lines.
+    """
+    mock_getlines.return_value = ["truncated"]
+
+    try:
+        raise ValueError()
+    except ValueError as e:
+        tb = DebugTraceback(e)
+
+    html = tb.render_traceback_html()
+    assert "test_debug.py" in html
+    assert "truncated" not in html
+
+
+def test_debugged_application_pin_security_false():
+    """Test that DebuggedApplication can be initialized with pin_security=False."""
+
+    @Request.application
+    def app(request):
+        return "OK"
+
+    # This should not raise AttributeError
+    debugged = DebuggedApplication(app, evalex=True, pin_security=False)
+    assert debugged.pin is None
